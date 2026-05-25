@@ -165,6 +165,20 @@ Disciplina que dio resultados repetidamente: **correr un caso representativo bar
 
 ---
 
+## Hallazgos del Dogfooding
+
+La suite de eval está en verde — pero los fixtures verdes esconden modos de fallo reales. Los bugs más afilados se encontraron *usando el equipo en tareas reales* ("dogfooding") y revisando su salida como lo haría un ingeniero externo: fallos que los fixtures nunca ejercían (siempre greenfield, specs sin ambigüedad, sin revisar el lint de los tests entregados). Cada uno se cerró de raíz con un **test de regresión determinista**, para que no pueda volver en silencio.
+
+**1. Greenfield: el explorador hizo "role-bleed" hacia el trabajo del coder.** Sobre un repo *vacío*, el `RepoExplorer` barato — pensado para mapear un código existente — no tenía nada que describir, así que respondió la tarea de código del usuario y emitió una implementación completa (y sutilmente buggy) como su "resumen de exploración." El `Planner` entonces planeó *replicar esa solución buggy*. Un coder fuerte rederivó el código correcto y enmascaró el problema, pero el riesgo estructural (coste/latencia, y un coder más débil enviando el bug) era real. **Fix de raíz:** el `ContextGatherer` hace short-circuit de la exploración cuando el workspace está vacío — cero llamadas del explorador en greenfield, sin role-bleed — con un test de regresión que verifica que el short-circuit dispara.
+
+**2. Brownfield: los gates eran ciegos al alcance de la tarea.** Sembrado con un módulo *real* (`pricing.py`) y con la tarea de añadir una función, `bandit` marcó un finding **pre-existente** de `urllib.urlopen` (B310) en código que el equipo nunca tocó. El loop de remediación de seguridad entonces (a) modificó la función pre-existente — violando "no toques el código existente," (b) intentó suprimirlo con `# noqa` (una directiva de `ruff` que `bandit` ignora — necesita `# nosec`), y (c) corrió hasta `max_iterations`, quemando **~60% del coste del run ($0.37 de $0.62)** sin resolver nada. **Fix de raíz:** un **baseline del seed a nivel de finding** — capturar los findings ya presentes en el código sembrado y restarlos, de modo que solo bloqueen los *nuevos*. (El scoping por archivo falla aquí: el coder reescribe el archivo entero para añadir la función, así que cuenta como "modificado" y seguiría marcando la línea intacta — el baseline a nivel de finding es lo que de verdad lo resuelve.) Más un **circuit-breaker de no-progreso**: si una pasada de remediación no reduce el conteo bloqueante, aborta y reporta riesgo residual en vez de quemar otra pasada. Tras el fix, un re-run brownfield hizo **cero** pasadas del coder de seguridad y dejó el código pre-existente intacto.
+
+**3. Brownfield: el DocsWriter barato alucinó la API.** Documentando el `pricing.py` real (precios de tokens de OpenRouter), el DocsWriter (`gemini-flash`) produjo un README con seguridad describiendo funciones de IVA / descuento por volumen (`get_base_price`, `apply_vat`, …) que **no existen**. **Fix de raíz:** aterrizarlo en hechos — inyectar de forma determinista la *lista cerrada de símbolos que el equipo realmente añadió* (un diff `ast` contra el baseline del seed) y restringir la instrucción a "documenta exactamente estos, no inventes nada más"; un checker determinista marca cualquier identificador tipo función del README ausente del código (señal `docs_grounded` — sin juez LLM). Tras el fix, el README mencionó solo la función real añadida.
+
+**La disciplina.** Ninguno de estos era visible en los fixtures de eval; se encontraron tratando al equipo como un producto y revisando su salida con criterio, y luego se convirtieron en tests de regresión deterministas y "gotchas verificados" para no re-descubrirlos. Un re-baseline tras los tres fixes confirmó que la suite siguió **19/19 en verde** con un perfil de coder mid-tier a **$0.48** (≈4× más barato que el baseline premium) — huecos reales cerrados sin regresión de la suite ni inflar el coste.
+
+---
+
 ## Gotchas de Ingeniería Verificados
 
 Cuatro problemas reales encontrados y resueltos durante el desarrollo — cada uno es evidencia de profundidad, no un ejemplo de libro de texto:

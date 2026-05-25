@@ -165,6 +165,20 @@ Discipline that paid off repeatedly: **run one cheap representative case before 
 
 ---
 
+## Dogfooding findings
+
+The eval suite is green — but green fixtures hide real failure modes. The sharpest bugs were found by *using the team on real tasks* ("dogfooding") and reviewing its output as an external engineer would: failure modes the fixtures never exercised (always greenfield, unambiguous specs, no lint-check of the delivered tests). Each was closed at the root with a **deterministic regression test**, so it cannot silently return.
+
+**1. Greenfield: the explorer "role-bled" into the coder's job.** Run on an *empty* repo, the cheap `RepoExplorer` — meant to map an existing codebase — had nothing to describe, so it answered the user's coding task instead, emitting a complete (and subtly buggy) implementation as its "exploration summary." The `Planner` then planned to *replicate that buggy solution*. A strong coder re-derived the correct code and masked the problem, but the structural risk (cost/latency, and a weaker coder shipping the bug) was real. **Root fix:** the `ContextGatherer` short-circuits exploration when the workspace is empty — zero explorer calls in greenfield, no role-bleed — with a regression test asserting the short-circuit fires.
+
+**2. Brownfield: the gates were blind to task scope.** Seeded with a *real* module (`pricing.py`) and asked to add one function, `bandit` flagged a **pre-existing** `urllib.urlopen` finding (B310) in code the team never touched. The security remediation loop then (a) modified the pre-existing function — violating "don't touch existing code," (b) tried to suppress it with `# noqa` (a `ruff` directive `bandit` ignores — it needs `# nosec`), and (c) ran to `max_iterations`, burning **~60% of the run's cost ($0.37 of $0.62)** without clearing anything. **Root fix:** a **seed baseline at finding granularity** — snapshot the findings already present in the seeded code and subtract them, so only *newly introduced* findings block. (File-level scoping fails here: the coder rewrites the whole file to add a function, so the file counts as "modified" and would still flag the untouched line — the finding-level baseline is what actually solves it.) Plus a **no-progress circuit-breaker**: if a remediation pass doesn't reduce the blocking count, abort and report residual risk instead of burning another pass. After the fix, a brownfield re-run did **zero** security-coder passes and left the pre-existing code untouched.
+
+**3. Brownfield: the cheap DocsWriter hallucinated the API.** Documenting the real `pricing.py` (OpenRouter token pricing), the `gemini-flash` DocsWriter produced a confident README describing VAT / volume-discount functions (`get_base_price`, `apply_vat`, …) that **do not exist**. **Root fix:** ground it in facts — deterministically inject the *closed list of symbols the team actually added* (an `ast` diff against the seed baseline) and restrict the instruction to "document exactly these, invent nothing else"; a deterministic checker then flags any function-like identifier in the README absent from the code (`docs_grounded` signal — no LLM judge). After the fix the README mentioned only the real added function.
+
+**The discipline.** None of these were visible in the eval fixtures; they were found by treating the team as a product and reviewing its output critically, then converted into deterministic regression tests and "verified gotchas" so they're never re-discovered. A re-baseline run after all three fixes confirmed the suite stayed **19/19 green** on a mid-tier coder profile at **$0.48** (≈4× cheaper than the premium baseline) — real holes closed without regressing the suite or inflating cost.
+
+---
+
 ## Verified Engineering Gotchas
 
 Four real issues caught and fixed during development — each one is evidence of depth, not a textbook example:
